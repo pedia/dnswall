@@ -34,13 +34,13 @@ struct query_record {
 
 /* Read in a NAME field, but discard the result (saves having to parse
  * compressed labels */
-void skip_name(unsigned char** ptr, unsigned char* end) {
+void skip_name(char** ptr, char* end) {
   if (*ptr >= end)
     return;
 
   do {
     if ((**ptr & 0xc0) == 0)
-      *ptr += **ptr + 1;
+      *ptr += (unsigned char)**ptr + 1;
     else {
       (*ptr)++;
       break;
@@ -50,7 +50,7 @@ void skip_name(unsigned char** ptr, unsigned char* end) {
 }
 
 /* Read in a short in network-byte order */
-short read_short(unsigned char** ptr, unsigned char* end) {
+short read_short(char** ptr, char* end) {
   if (*ptr + 2 > end)
     return 0;
 
@@ -60,7 +60,7 @@ short read_short(unsigned char** ptr, unsigned char* end) {
 }
 
 /* Read in an int in network-byte order */
-int read_int(unsigned char** ptr, unsigned char* end) {
+int read_int(char** ptr, char* end) {
   if (*ptr + 4 > end)
     return 0;
 
@@ -70,9 +70,11 @@ int read_int(unsigned char** ptr, unsigned char* end) {
 }
 
 /* Check if an IPv4 (A record) is valid (global) or not */
-int check_a(unsigned char* ptr, unsigned char* end) {
-  if (ptr + 4 > end)
+int check_a(char* sptr, char* end) {
+  if (sptr + 4 > end)
     return 0;
+
+  unsigned char* ptr = (unsigned char *)sptr;
 
   // Invalid
   if (ptr[0] == 0)
@@ -102,9 +104,11 @@ int check_a(unsigned char* ptr, unsigned char* end) {
 }
 
 /* Check if an IPv6 (AAAA record) is valid (global) or not */
-int check_aaaa(unsigned char* ptr, unsigned char* end) {
-  if (ptr + 16 > end)
+int check_aaaa(char* sptr, char* end) {
+  if (sptr + 16 > end)
     return 0;
+
+  unsigned char* ptr = (unsigned char*)sptr;
 
   if (ptr[0] == 0x00 && ptr[1] == 0x00 &&
       ptr[2] == 0x00 && ptr[3] == 0x00 &&
@@ -127,7 +131,7 @@ int check_aaaa(unsigned char* ptr, unsigned char* end) {
 
     // IPv4 mapped (check as if an IPv4 address)
     if (ptr[10] == 0xff && ptr[11] == 0xff)
-      return check_a(ptr + 12, end);
+      return check_a(sptr + 12, end);
   }
 
   // Globally unique local
@@ -210,14 +214,15 @@ int main(int argc, char** argv) {
   struct query_record querys[65536];
   int current_query = 0;
 
-  unsigned char msg[4 * 1024];
+  char msg[1024];
   while (1) {
     int addrlen = sizeof(addr);
     int len = recvfrom(sock, msg, sizeof(msg), 0,
                        (struct sockaddr *)&addr, (socklen_t *)&addrlen);
 
-    // If there was an error or the msg was too big, then just drop it
-    if (len <= 0 || len > 2 * 1024)
+    // If there was an error or the msg was too big (specified max in RFC),
+    // then just drop it
+    if (len <= 0 || len > 512)
       continue;
 
     // If the packet is a query, then proxy (almost) without change
@@ -240,10 +245,14 @@ int main(int argc, char** argv) {
     }
     // If the packet is a response, then check it for invalid records
     else {
+      // If it didn't come from the real forwarder, ignore it
+      if (addr.sin_addr.s_addr != dst_addr.sin_addr.s_addr)
+        continue;
+
       int valid = 1;
 
       // Start of the real payload
-      unsigned char *ptr = &msg[12];
+      char *ptr = &msg[12];
       // Skip all the query records
       for (int count = ntohs(*((short*)&msg[4])); count > 0; count--) {
         skip_name(&ptr, msg + len);
@@ -256,7 +265,7 @@ int main(int argc, char** argv) {
       }
 
       // Start of the response section
-      unsigned char *end = ptr;
+      char *end = ptr;
       for (int count = ntohs(*((short*)&msg[6])); count > 0; count--) {
         skip_name(&ptr, msg + len);
 
@@ -297,7 +306,7 @@ int main(int argc, char** argv) {
         *((int*)end) = htonl(3600); end += 4; // ttl = 3600
 
         // Skip the length field, we'll fill it in when we know
-        unsigned char *soabegin = end;
+        char *soabegin = end;
         end += 2;
 
         *end = 0; end++; // mname = '.'
@@ -309,10 +318,10 @@ int main(int argc, char** argv) {
         *((int*)end) = htonl(3600); end += 4; // minimum ttl = 3600
 
         // Fill in the length now that we know what it is
-        *((short*)soabegin) = htons((int)end - (int)soabegin - 2);
+        *((short*)soabegin) = htons(end - soabegin - 2);
 
         // Set the new length of the packet
-        len = (int)end - (int)msg;
+        len = end - msg;
       }
 
       // Extract our query identifier from the packet
